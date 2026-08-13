@@ -120,3 +120,9 @@
 - [x] Render a complete Flight Recorder timeline with request, proposal, policy, execution, evidence items, and audit payload details
 - [x] Add explicit loading/error handling to differentiator mutations and each feature panel
 - [x] Add regression tests for persisted policies, contracts, flight bundles, replay history, Cost Guard gating, and semantic approval
+
+## Setup handoff
+
+- [ ] Verify the latest differentiated-feature commit is present on GitHub
+- [ ] Document required, optional, and placeholder environment keys
+- [ ] Document fresh-clone installation, migration, testing, development, and production-start commands
