@@ -36,3 +36,9 @@ The application is intentionally configured to run with platform-provided develo
 ## Validation status
 
 The current implementation passes TypeScript checks, Vitest tests, and production builds. The test suite covers encryption round trips, SQL redaction, read-only allowlisting, mutation rejection, multiple-statement rejection, hallucinated identifier rejection, server-side result limiting, structured output failures, workspace authorization isolation, and append-only audit event policy.
+
+## Differentiator Lab
+
+The Differentiator Lab extends the core console with eight evidence-led capabilities. **Schema Drift Radar** compares the two latest catalog snapshots and classifies table, column, and type changes. **Blast Radius Simulator** maps observed relationships, indexes, and views around a selected object. **Query Replay Lab** normalizes query requests into fingerprints for historical comparison. **DBOps Flight Recorder** groups audit events into an incident timeline. **Policy-as-Code Studio** provides reviewable read-only rule drafts. **Data Contract Watchtower** checks declared table columns against observed schema evidence. **Explainable Query Cost Guard** evaluates plan cost, estimated rows, and node type with transparent reasons. **Semantic Query Memory** finds workspace-scoped proposal patterns using deterministic token overlap and never silently executes a remembered query.
+
+All feature surfaces use explicit evidence states. A connected database is required for live schema, plan, and contract findings. A real model gateway is required for live AI generation. No feature creates synthetic operational metrics or claims an impact that is not supported by observed metadata.

@@ -6,6 +6,7 @@ import { isImmutableAuditEventType, parseSqlProposal } from "./contracts";
 import { canAccessWorkspace } from "./authz";
 import { appendAuditEvent } from "./audit";
 import { parseExplainPlan } from "./performance";
+import { buildBlastRadius, checkContract, costGuard, diffCatalogs, fingerprintSql, semanticSimilarity } from "./differentiators";
 
 const catalog = {
   tables: [{ schema: "public", name: "orders", type: "BASE TABLE", columns: [{ name: "id", dataType: "integer", nullable: false, defaultValue: null }, { name: "created_at", dataType: "timestamp", nullable: false, defaultValue: null }] }],
@@ -67,6 +68,36 @@ describe("DBOps security primitives", () => {
   it("extracts evidence-backed EXPLAIN findings", () => {
     const plan = parseExplainPlan([{ Plan: { "Node Type": "Seq Scan", "Total Cost": 12000, "Plan Rows": 250000 } }]);
     expect(plan.findings.map(item => item.kind)).toEqual(["sequential_scan", "high_cost", "large_estimate"]);
+  });
+
+  it("detects schema drift with severity", () => {
+    const previous = { tables: [{ schema: "public", name: "orders", columns: [{ name: "id", dataType: "integer" }, { name: "created_at", dataType: "timestamp" }] }] };
+    const current = { tables: [{ schema: "public", name: "orders", columns: [{ name: "id", dataType: "bigint" }, { name: "total", dataType: "numeric" }] }] };
+    const changes = diffCatalogs(previous, current);
+    expect(changes.map(change => change.kind)).toEqual(["column_type_changed", "column_added", "column_removed"]);
+    expect(changes[0]?.severity).toBe("high");
+  });
+
+  it("calculates blast radius only from observed dependencies", () => {
+    const radius = buildBlastRadius({ tables: [], relationships: [{ fromTable: "public.orders", fromColumn: "customer_id", toTable: "public.customers", toColumn: "id" }], indexes: [], views: [] }, "public.orders");
+    expect(radius.risk).toBe("medium");
+    expect(radius.relationships).toHaveLength(1);
+  });
+
+  it("normalizes query fingerprints and scores semantic overlap", () => {
+    expect(fingerprintSql("SELECT * FROM orders WHERE id = 42")).toBe("select * from orders where id = ?");
+    expect(semanticSimilarity("orders created today", "show orders created yesterday")).toBeGreaterThan(0.3);
+  });
+
+  it("checks data contracts against catalog evidence", () => {
+    const result = checkContract({ tables: [{ schema: "public", name: "orders", columns: [{ name: "id", dataType: "integer" }] }] }, { table: "public.orders", columns: [{ name: "id", dataType: "integer" }, { name: "total", dataType: "numeric" }] });
+    expect(result.status).toBe("violation");
+    expect(result.issues[0]).toMatch(/Missing column/);
+  });
+
+  it("raises transparent cost guard warnings", () => {
+    expect(costGuard({ totalCost: 12000, planRows: 200000, nodeType: "Seq Scan" }).status).toBe("review");
+    expect(costGuard({ totalCost: 10, planRows: 2, nodeType: "Index Scan" }).status).toBe("clear");
   });
 
   it("rejects hallucinated identifiers", () => {

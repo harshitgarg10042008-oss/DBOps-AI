@@ -11,9 +11,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import SettingsSurface from "@/components/SettingsSurface";
-import { Activity, AlertTriangle, ArrowUpRight, Database, FileSearch, Gauge, KeyRound, LayoutDashboard, LogOut, Network, Play, Plus, RefreshCw, Search, ShieldCheck, Terminal, X, Zap } from "lucide-react";
+import DifferentiatorLab from "@/components/DifferentiatorLab";
+import { Activity, AlertTriangle, ArrowUpRight, Database, FileSearch, Gauge, KeyRound, LayoutDashboard, LogOut, Network, Play, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Terminal, X, Zap } from "lucide-react";
 
-type Section = "overview" | "databases" | "assistant" | "queries" | "performance" | "security" | "investigations" | "evaluation" | "schema" | "audit" | "team" | "settings";
+type Section = "overview" | "databases" | "assistant" | "queries" | "performance" | "security" | "investigations" | "evaluation" | "schema" | "audit" | "team" | "settings" | "lab";
 
 const navItems: Array<{ id: Section; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "Command Center", icon: LayoutDashboard },
@@ -28,6 +29,7 @@ const navItems: Array<{ id: Section; label: string; icon: typeof LayoutDashboard
   { id: "audit", label: "Audit Ledger", icon: FileSearch },
   { id: "team", label: "Team", icon: Network },
   { id: "settings", label: "Settings", icon: KeyRound },
+  { id: "lab", label: "Differentiator Lab", icon: Sparkles },
 ];
 
 function statusTone(status: string) {
@@ -99,6 +101,7 @@ export default function Home() {
           {(section === "performance" || section === "security" || section === "investigations" || section === "evaluation" || section === "team" || section === "settings") && <RoadmapSurface section={section} />}
           {section === "schema" && <SchemaExplorer connections={connections.data ?? []} active={active} setActive={setActiveConnection} schema={schema.data} onRefresh={id => refreshSchema.mutate({ id })} />}
           {section === "audit" && <AuditLedger events={dashboard.data?.audit ?? []} />}
+          {section === "lab" && <DifferentiatorLab connections={connections.data ?? []} activeConnection={active} />}
         </div>
       </main>
     </div>

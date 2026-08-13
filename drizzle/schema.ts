@@ -92,6 +92,7 @@ export const sqlProposals = mysqlTable("sqlProposals", {
   confidence: varchar("confidence", { length: 16 }).notNull(),
   model: varchar("model", { length: 120 }),
   promptVersion: varchar("promptVersion", { length: 32 }).default("v1").notNull(),
+  approved: int("approved").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, table => ({ requestIdx: uniqueIndex("proposal_request_unique").on(table.requestId) }));
 
@@ -142,6 +143,31 @@ export const auditEvents = mysqlTable("auditEvents", {
   createdIdx: index("audit_created_idx").on(table.createdAt),
 }));
 
+export const policyRules = mysqlTable("policyRules", {
+  id: int("id").autoincrement().primaryKey(),
+  workspaceId: int("workspaceId").notNull(),
+  name: varchar("name", { length: 160 }).notNull(),
+  version: int("version").default(1).notNull(),
+  maxRows: int("maxRows").default(100).notNull(),
+  allowedSchemas: json("allowedSchemas").notNull(),
+  status: mysqlEnum("status", ["draft", "active", "archived"]).default("draft").notNull(),
+  createdById: int("createdById").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => ({ workspaceIdx: index("policy_workspace_idx").on(table.workspaceId) }));
+
+export const dataContracts = mysqlTable("dataContracts", {
+  id: int("id").autoincrement().primaryKey(),
+  workspaceId: int("workspaceId").notNull(),
+  connectionId: int("connectionId").notNull(),
+  name: varchar("name", { length: 160 }).notNull(),
+  tableName: varchar("tableName", { length: 255 }).notNull(),
+  definition: json("definition").notNull(),
+  status: mysqlEnum("status", ["active", "paused"]).default("active").notNull(),
+  createdById: int("createdById").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, table => ({ workspaceIdx: index("contract_workspace_idx").on(table.workspaceId), connectionIdx: index("contract_connection_idx").on(table.connectionId) }));
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type Workspace = typeof workspaces.$inferSelect;
@@ -149,3 +175,5 @@ export type DatabaseConnection = typeof databaseConnections.$inferSelect;
 export type QueryRequest = typeof queryRequests.$inferSelect;
 export type SqlProposal = typeof sqlProposals.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
+export type PolicyRule = typeof policyRules.$inferSelect;
+export type DataContract = typeof dataContracts.$inferSelect;

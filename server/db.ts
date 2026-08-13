@@ -5,6 +5,8 @@ import {
   databaseConnections,
   evidenceItems,
   policyDecisions,
+  policyRules,
+  dataContracts,
   queryExecutions,
   queryRequests,
   schemaSnapshots,
@@ -97,6 +99,54 @@ export async function saveSchemaSnapshot(connectionId: number, catalog: { tables
   return Number(snapshot[0].insertId);
 }
 
+export async function listSchemaSnapshots(connectionId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(schemaSnapshots).where(eq(schemaSnapshots.connectionId, connectionId)).orderBy(desc(schemaSnapshots.createdAt)).limit(2);
+}
+
+export async function listReplayHistory(workspaceId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const requests = await db.select().from(queryRequests).where(eq(queryRequests.workspaceId, workspaceId)).orderBy(desc(queryRequests.createdAt)).limit(40);
+  const output = [];
+  for (const request of requests) {
+    const proposal = await db.select({ sqlText: sqlProposals.sqlText }).from(sqlProposals).where(eq(sqlProposals.requestId, request.id)).limit(1);
+    const execution = await db.select({ durationMs: queryExecutions.durationMs, rowsReturned: queryExecutions.rowsReturned, status: queryExecutions.status, createdAt: queryExecutions.createdAt }).from(queryExecutions).where(eq(queryExecutions.requestId, request.id)).orderBy(desc(queryExecutions.createdAt)).limit(1);
+    output.push({ ...request, sqlText: proposal[0]?.sqlText ?? null, execution: execution[0] ?? null });
+  }
+  return output;
+}
+
+export async function getFlightBundle(workspaceId: number, requestId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const request = await db.select().from(queryRequests).where(and(eq(queryRequests.workspaceId, workspaceId), eq(queryRequests.id, requestId))).limit(1);
+  if (!request[0]) return undefined;
+  const [proposal, policy, execution, evidence, audit] = await Promise.all([
+    db.select().from(sqlProposals).where(eq(sqlProposals.requestId, requestId)).limit(1),
+    db.select().from(policyDecisions).where(eq(policyDecisions.requestId, requestId)).orderBy(desc(policyDecisions.createdAt)).limit(1),
+    db.select().from(queryExecutions).where(eq(queryExecutions.requestId, requestId)).orderBy(desc(queryExecutions.createdAt)).limit(1),
+    db.select().from(evidenceItems).where(eq(evidenceItems.requestId, requestId)).orderBy(desc(evidenceItems.createdAt)),
+    db.select().from(auditEvents).where(and(eq(auditEvents.workspaceId, workspaceId), eq(auditEvents.requestId, requestId))).orderBy(auditEvents.createdAt),
+  ]);
+  return { request: request[0], proposal: proposal[0] ?? null, policy: policy[0] ?? null, execution: execution[0] ?? null, evidence, audit };
+}
+
+export async function approveProposal(workspaceId: number, proposalId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const rows = await db.select({ id: sqlProposals.id }).from(sqlProposals).innerJoin(queryRequests, eq(sqlProposals.requestId, queryRequests.id)).where(and(eq(sqlProposals.id, proposalId), eq(queryRequests.workspaceId, workspaceId))).limit(1);
+  if (!rows[0]) throw new Error("Proposal is not available in your workspace");
+  await db.update(sqlProposals).set({ approved: 1 }).where(eq(sqlProposals.id, proposalId));
+}
+
+export async function listSemanticProposals(workspaceId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ id: sqlProposals.id, requestId: sqlProposals.requestId, sqlText: sqlProposals.sqlText, assumptions: sqlProposals.assumptions, confidence: sqlProposals.confidence, approved: sqlProposals.approved, question: queryRequests.naturalLanguageRequest, createdAt: sqlProposals.createdAt }).from(sqlProposals).innerJoin(queryRequests, eq(sqlProposals.requestId, queryRequests.id)).where(and(eq(queryRequests.workspaceId, workspaceId), eq(sqlProposals.approved, 1))).orderBy(desc(sqlProposals.createdAt)).limit(20);
+}
+
 export async function latestSchemaSnapshot(connectionId: number) {
   const db = await getDb();
   if (!db) return undefined;
@@ -175,6 +225,32 @@ export async function listWorkspaceMembers(workspaceId: number) {
   const db = await getDb();
   if (!db) return [];
   return db.select({ id: workspaceMembers.id, userId: users.id, name: users.name, email: users.email, role: workspaceMembers.role, createdAt: workspaceMembers.createdAt }).from(workspaceMembers).innerJoin(users, eq(workspaceMembers.userId, users.id)).where(eq(workspaceMembers.workspaceId, workspaceId)).orderBy(desc(workspaceMembers.createdAt));
+}
+
+export async function listPolicyRules(workspaceId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(policyRules).where(eq(policyRules.workspaceId, workspaceId)).orderBy(desc(policyRules.createdAt));
+}
+
+export async function createPolicyRule(data: typeof policyRules.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const result = await db.insert(policyRules).values(data);
+  return Number(result[0].insertId);
+}
+
+export async function listDataContracts(workspaceId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(dataContracts).where(eq(dataContracts.workspaceId, workspaceId)).orderBy(desc(dataContracts.updatedAt));
+}
+
+export async function createDataContract(data: typeof dataContracts.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const result = await db.insert(dataContracts).values(data);
+  return Number(result[0].insertId);
 }
 
 export async function schemaStats(workspaceId: number) {

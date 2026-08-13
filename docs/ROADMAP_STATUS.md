@@ -20,3 +20,7 @@ The application intentionally does not fabricate database observations. Performa
 ## Next credential-gated actions
 
 After credentials are supplied, connect a restricted PostgreSQL role, refresh the schema catalog, run the proposal workflow against a fixture database, execute benchmark cases, verify audit traces, and review performance evidence. Only then should production model and database credentials be introduced.
+
+## Differentiator hardening status
+
+The differentiated feature set now includes persistent versioned policy drafts, persisted data contracts, explicit operator approval for semantic query memory, EXPLAIN-based Cost Guard review before execution, workspace-scoped replay history with execution metadata, and request-scoped Flight Recorder bundles joining proposal, policy, execution, evidence, and audit records. Blast Radius surfaces observed relationship, index, and view edges. Features remain read-only and evidence-bound; live findings still require a connected PostgreSQL endpoint.

@@ -5,14 +5,15 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { createQueryRequest, ensureWorkspace, getConnection, getDb, isWorkspaceMember, latestSchemaSnapshot, listAuditEvents, listConnections, listPlanEvidence, listRecentQueries, listSlowQueries, listWorkspaceMembers, saveEvidence, saveExecution, savePolicyDecision, saveProposal, saveSchemaSnapshot, schemaStats, updateQueryStatus } from "./db";
-import { auditEvents, databaseConnections, policyDecisions, queryRequests, sqlProposals, workspaceMembers } from "../drizzle/schema";
+import { approveProposal, createDataContract, createPolicyRule, createQueryRequest, ensureWorkspace, getConnection, getDb, getFlightBundle, isWorkspaceMember, latestSchemaSnapshot, listAuditEvents, listConnections, listDataContracts, listPlanEvidence, listPolicyRules, listRecentQueries, listReplayHistory, listSchemaSnapshots, listSemanticProposals, listSlowQueries, listWorkspaceMembers, saveEvidence, saveExecution, savePolicyDecision, saveProposal, saveSchemaSnapshot, schemaStats, updateQueryStatus } from "./db";
+import { auditEvents, dataContracts, databaseConnections, policyDecisions, policyRules, queryRequests, sqlProposals, workspaceMembers } from "../drizzle/schema";
 import { encryptSecret, redactSql } from "./crypto";
 import { collectCatalog, executeReadOnly, verifyPostgresConnection, type Catalog } from "./postgres";
 import { validateReadOnlySql } from "./sqlPolicy";
 import { parseSqlProposal } from "./contracts";
 import { appendAuditEvent } from "./audit";
 import { parseExplainPlan } from "./performance";
+import { buildBlastRadius, checkContract, costGuard, diffCatalogs, fingerprintSql, semanticSimilarity } from "./differentiators";
 
 const connectionInput = z.object({
   displayName: z.string().min(2).max(160),
@@ -163,7 +164,7 @@ export const appRouter = router({
       await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "POLICY_DECISION", status: policy.decision, metadata: { riskClass: policy.riskClass, reasons: policy.reasons } });
       return { ...parsed, policy };
     }),
-    execute: protectedProcedure.input(z.object({ requestId: z.number().int(), sql: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    execute: protectedProcedure.input(z.object({ requestId: z.number().int(), sql: z.string().min(1), overrideCostGuard: z.boolean().default(false) })).mutation(async ({ ctx, input }) => {
       const workspaceId = await workspaceFor(ctx.user.id);
       const db = await getDb();
       if (!db) throw new Error("Application database is unavailable");
@@ -179,6 +180,22 @@ export const appRouter = router({
         await updateQueryStatus(input.requestId, "blocked");
         await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "QUERY_BLOCKED", status: "rejected", metadata: { reasons: policy.reasons } });
         throw new Error(policy.reasons.join(" "));
+      }
+      let preflightPlan: ReturnType<typeof parseExplainPlan> | null = null;
+      try {
+        const planResult = await executeReadOnly(connection, `EXPLAIN (FORMAT JSON) ${input.sql.replace(/^\s*EXPLAIN(?:\s*\([^)]*\))?/i, "")}`, 1);
+        const planPayload = planResult.rows[0]?.["QUERY PLAN"] ?? planResult.rows[0]?.query_plan ?? planResult.rows[0];
+        preflightPlan = parseExplainPlan(planPayload);
+        const guard = costGuard(preflightPlan);
+        if (guard.status === "review" && !input.overrideCostGuard) {
+          await savePolicyDecision({ requestId: input.requestId, decision: "clarification", riskClass: "high_risk", reasons: guard.reasons, normalizedSql: policy.normalizedSql });
+          await updateQueryStatus(input.requestId, "blocked");
+          await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "QUERY_BLOCKED", status: "review_required", metadata: { costGuard: guard } });
+          throw new Error(`Cost Guard review required: ${guard.reasons.join(" ")}`);
+        }
+      } catch (error) {
+        if (error instanceof Error && /Cost Guard review required/.test(error.message)) throw error;
+        preflightPlan = null;
       }
       await updateQueryStatus(input.requestId, "executing");
       try {
@@ -274,6 +291,63 @@ export const appRouter = router({
   }),
   evaluation: router({
     benchmark: protectedProcedure.query(async () => ({ cases: [], metrics: { accuracy: null, safetyViolations: null, hallucinationRate: null, latencyMs: null, cost: null }, status: "no_benchmark_run" as const })),
+  }),
+  differentiators: router({
+    drift: protectedProcedure.input(z.object({ connectionId: z.number().int() })).query(async ({ ctx, input }) => {
+      const workspaceId = await workspaceFor(ctx.user.id);
+      const connection = await getConnection(workspaceId, input.connectionId);
+      if (!connection) throw new Error("Connection not found in your workspace");
+      const snapshots = await listSchemaSnapshots(connection.id);
+      const current = snapshots[0]?.metadata as Catalog | undefined;
+      const previous = snapshots[1]?.metadata as Catalog | undefined;
+      return { snapshots: snapshots.length, changes: current ? diffCatalogs(previous ?? null, current) : [], status: current ? "evidence_available" as const : "awaiting_catalog" as const };
+    }),
+    blastRadius: protectedProcedure.input(z.object({ connectionId: z.number().int(), objectName: z.string().min(1) })).query(async ({ ctx, input }) => {
+      const workspaceId = await workspaceFor(ctx.user.id);
+      const connection = await getConnection(workspaceId, input.connectionId);
+      if (!connection) throw new Error("Connection not found in your workspace");
+      const snapshot = await latestSchemaSnapshot(connection.id);
+      return snapshot ? { ...buildBlastRadius(snapshot.metadata as Catalog, input.objectName), status: "evidence_available" as const } : { objectName: input.objectName, relationships: [], indexes: [], views: [], risk: "unknown" as const, status: "awaiting_catalog" as const };
+    }),
+    replay: protectedProcedure.query(async ({ ctx }) => {
+      const rows = await listReplayHistory(await workspaceFor(ctx.user.id));
+      return rows.map(row => ({ ...row, fingerprint: fingerprintSql(row.sqlText ?? row.naturalLanguageRequest), beforeAfter: row.execution ? { durationMs: row.execution.durationMs, rowsReturned: row.execution.rowsReturned, status: row.execution.status } : null }));
+    }),
+    flightBundle: protectedProcedure.input(z.object({ requestId: z.number().int() })).query(async ({ ctx, input }) => {
+      const bundle = await getFlightBundle(await workspaceFor(ctx.user.id), input.requestId);
+      if (!bundle) throw new Error("Request is not available in your workspace");
+      return bundle;
+    }),
+    memory: protectedProcedure.input(z.object({ question: z.string().min(1) })).query(async ({ ctx, input }) => {
+      const proposals = await listSemanticProposals(await workspaceFor(ctx.user.id));
+      return proposals.map(item => ({ ...item, similarity: semanticSimilarity(input.question, item.question) })).filter(item => item.similarity >= 0.2).sort((a, b) => b.similarity - a.similarity).slice(0, 5);
+    }),
+    approveMemory: protectedProcedure.input(z.object({ proposalId: z.number().int() })).mutation(async ({ ctx, input }) => { await approveProposal(await workspaceFor(ctx.user.id), input.proposalId); return { success: true }; }),
+    costGuard: protectedProcedure.input(z.object({ plan: z.object({ totalCost: z.number().optional(), planRows: z.number().optional(), nodeType: z.string().optional() }).nullable() })).query(({ input }) => costGuard(input.plan)),
+    contractCheck: protectedProcedure.input(z.object({ connectionId: z.number().int(), contract: z.object({ table: z.string(), columns: z.array(z.object({ name: z.string(), dataType: z.string().optional(), nullable: z.boolean().optional() })) }) })).query(async ({ ctx, input }) => {
+      const workspaceId = await workspaceFor(ctx.user.id);
+      const connection = await getConnection(workspaceId, input.connectionId);
+      if (!connection) throw new Error("Connection not found in your workspace");
+      const snapshot = await latestSchemaSnapshot(connection.id);
+      return snapshot ? checkContract(snapshot.metadata as Catalog, input.contract) : { status: "pending" as const, issues: ["Refresh the schema catalog first."] };
+    }),
+    policies: protectedProcedure.query(async ({ ctx }) => listPolicyRules(await workspaceFor(ctx.user.id))),
+    savePolicy: protectedProcedure.input(z.object({ name: z.string().min(2), maxRows: z.number().int().min(1).max(10000), allowedSchemas: z.array(z.string()).default(["public"]), activate: z.boolean().default(false) })).mutation(async ({ ctx, input }) => {
+      const workspaceId = await workspaceFor(ctx.user.id);
+      const version = (await listPolicyRules(workspaceId)).filter(rule => rule.name === input.name).length + 1;
+      const id = await createPolicyRule({ workspaceId, name: input.name, version, maxRows: input.maxRows, allowedSchemas: input.allowedSchemas, status: input.activate ? "active" : "draft", createdById: ctx.user.id });
+      await appendAuditEvent({ workspaceId, actorId: ctx.user.id, eventType: "policy_decision", status: "success", metadata: { action: "policy_saved", policyId: id, version } });
+      return { id, version };
+    }),
+    dryRunPolicy: protectedProcedure.input(z.object({ sql: z.string().min(1), maxRows: z.number().int().min(1).max(10000) })).mutation(async ({ input }) => ({ ...validateReadOnlySql(input.sql, { tables: [], relationships: [], indexes: [], constraints: [], views: [] } as Catalog), bounded: input.sql.toLowerCase().includes("limit") || input.maxRows > 0 })),
+    contracts: protectedProcedure.query(async ({ ctx }) => listDataContracts(await workspaceFor(ctx.user.id))),
+    saveContract: protectedProcedure.input(z.object({ connectionId: z.number().int(), name: z.string().min(2), tableName: z.string().min(1), definition: z.object({ columns: z.array(z.object({ name: z.string(), dataType: z.string().optional() })) }) })).mutation(async ({ ctx, input }) => {
+      const workspaceId = await workspaceFor(ctx.user.id);
+      const connection = await getConnection(workspaceId, input.connectionId);
+      if (!connection) throw new Error("Connection not found in your workspace");
+      const id = await createDataContract({ workspaceId, connectionId: input.connectionId, name: input.name, tableName: input.tableName, definition: input.definition, createdById: ctx.user.id });
+      return { id };
+    }),
   }),
   dashboard: router({
     summary: protectedProcedure.query(async ({ ctx }) => {

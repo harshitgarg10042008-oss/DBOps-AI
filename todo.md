@@ -78,3 +78,45 @@
 - [x] Add investigation evidence cards and explicit background-job status
 - [x] Add model-configuration placeholder controls inside the Evaluation workspace
 - [x] Save a fresh checkpoint after the final evidence-display pass
+
+## Differentiation exploration
+
+- [x] Evaluate and prioritize unique DBOps AI features beyond the current read-only assistant, schema explorer, performance, security, audit, team, and evaluation surfaces
+- [x] Define the selected feature set, data model impact, safety boundaries, and phased implementation plan
+
+## Differentiating feature implementation
+
+- [x] Implement Schema Drift Radar with versioned snapshot comparison and severity
+- [x] Implement Blast Radius Simulator with dependency and impact graph
+- [x] Implement Query Replay Lab with normalized fingerprints and historical comparison
+- [x] Implement DBOps Flight Recorder with incident bundles and evidence timeline
+- [x] Implement Policy-as-Code Studio with versioned dry-run rules
+- [x] Implement Data Contract Watchtower with contract definitions and drift checks
+- [x] Implement Explainable Query Cost Guard with pre-execution plan warnings
+- [x] Implement Semantic Query Memory with approved query patterns and safe reuse
+- [x] Add tests, documentation, navigation, loading states, and responsive UI for all differentiated features
+- [x] Run final validation, save checkpoint, and push all changes to GitHub
+
+## Differentiator hardening
+
+- [x] Add blast-radius graph nodes and edges with affected-object mapping
+- [x] Base Query Replay on normalized SQL and execution history with before/after comparison
+- [x] Build Flight Recorder incident bundles joining request, proposal, policy, execution, evidence, and audit data
+- [x] Persist versioned policy rules and add backend dry-run evaluation
+- [x] Store contract definitions and add watchtower status/history
+- [x] Integrate Cost Guard into the real query execution flow before SQL execution
+- [x] Add approval and explicit reuse mechanics for Semantic Query Memory
+- [x] Add comprehensive differentiator loading/error states and broader tests
+- [x] Save a fresh checkpoint after differentiator hardening
+
+## Final differentiator verification
+
+- [x] Implement a graph model with explicit nodes and edges for Blast Radius and render affected objects from it
+- [x] Expand Flight Recorder into a full joined incident timeline with request, proposal, policy, execution, evidence, and audit details
+- [x] Add explicit loading and error states per Differentiator Lab surface and tests for persistence, bundles, replay, cost gating, and memory approval
+
+## Final evidence and regression pass
+
+- [x] Render a complete Flight Recorder timeline with request, proposal, policy, execution, evidence items, and audit payload details
+- [x] Add explicit loading/error handling to differentiator mutations and each feature panel
+- [x] Add regression tests for persisted policies, contracts, flight bundles, replay history, Cost Guard gating, and semantic approval
