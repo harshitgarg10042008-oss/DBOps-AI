@@ -4,6 +4,7 @@ import type { Express, Request, Response } from "express";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
 import { sdk } from "./sdk";
+import { ENV } from "./env";
 
 function getQueryParam(req: Request, key: string): string | undefined {
   const value = req.query[key];
@@ -62,4 +63,47 @@ export function registerOAuthRoutes(app: Express) {
       res.status(500).json({ error: "OAuth callback failed" });
     }
   });
+
+  // LOCAL-DEV-ONLY: Bypass OAuth for local development
+  // This route is ONLY registered when NOT in production mode
+  // It creates a local user using OWNER_OPEN_ID and OWNER_NAME from .env
+  // and mints a real session token using the same mechanism as OAuth
+  if (!ENV.isProduction) {
+    app.get("/api/dev/local-login", async (req: Request, res: Response) => {
+      const ownerOpenId = ENV.ownerOpenId;
+      const ownerName = ENV.ownerName;
+
+      if (!ownerOpenId) {
+        res.status(500).json({ error: "OWNER_OPEN_ID not configured in .env" });
+        return;
+      }
+
+      try {
+        // Create/upsert the local owner user
+        await db.upsertUser({
+          openId: ownerOpenId,
+          name: ownerName || "Local Developer",
+          email: null,
+          loginMethod: "local-dev",
+          lastSignedIn: new Date(),
+        });
+
+        // Mint a real session token using the same mechanism as OAuth
+        const sessionToken = await sdk.createSessionToken(ownerOpenId, {
+          name: ownerName || "Local Developer",
+          expiresInMs: ONE_YEAR_MS,
+        });
+
+        // Set the same session cookie as OAuth
+        const cookieOptions = getSessionCookieOptions(req);
+        res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+
+        console.log("[Local Dev Login] Created session for:", ownerOpenId);
+        res.redirect(302, "/");
+      } catch (error) {
+        console.error("[Local Dev Login] Failed", error);
+        res.status(500).json({ error: "Local dev login failed" });
+      }
+    });
+  }
 }
