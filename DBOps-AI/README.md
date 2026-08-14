@@ -1,0 +1,33 @@
+# DBOps AI
+
+DBOps AI is a read-only-first PostgreSQL operations control plane for authenticated teams. It connects natural-language database questions to structured SQL proposals, deterministic policy validation, constrained execution, evidence-grounded explanations, schema intelligence, performance findings, security posture checks, and append-only auditability.
+
+## Product workflow
+
+**Connect → catalog → ask → propose → verify → execute → explain → audit.** Database credentials are encrypted server-side. The model never receives credentials or unrestricted database access. SQL proposals are accepted only when the deterministic read-only policy engine confirms a single safe statement with known identifiers. Query execution uses a read-only transaction, a server-side timeout, and a bounded result set.
+
+## Included surfaces
+
+The cyberpunk operations console includes the Command Center, PostgreSQL Databases, AI Assistant, Query History, Performance, Security Posture, Investigations, AI Evaluation, Schema Explorer, Audit Ledger, Team, and Settings workspaces. Empty, loading, pending, and error states are explicit; the application never fabricates database findings, metrics, query results, or evaluation scores.
+
+## Development
+
+```bash
+pnpm install
+pnpm check
+pnpm test
+pnpm build
+```
+
+The application uses React, Tailwind, Express, tRPC, Drizzle, MySQL/TiDB for application data, PostgreSQL for connected database endpoints, and the platform LLM gateway. External credentials are intentionally not committed. Add them through the project secret-management flow only after reviewing the documentation in `docs/ENVIRONMENT_PLACEHOLDERS.md`.
+
+## Documentation
+
+- [`docs/DBOps_AI_Implementation.md`](docs/DBOps_AI_Implementation.md) — product workflow and security contract.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system architecture and request lifecycle.
+- [`docs/ROADMAP_STATUS.md`](docs/ROADMAP_STATUS.md) — implementation status and credential-gated next steps.
+- [`docs/ENVIRONMENT_PLACEHOLDERS.md`](docs/ENVIRONMENT_PLACEHOLDERS.md) — safe credential handoff rules.
+
+## Current validation
+
+The project passes TypeScript checks, Vitest security and authorization tests, and the production build. Live database and model validation requires a restricted PostgreSQL fixture endpoint and the LLM/API credentials supplied separately by the project owner.
