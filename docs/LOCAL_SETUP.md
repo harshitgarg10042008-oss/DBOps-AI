@@ -37,7 +37,9 @@ Create a local environment file using the variable names below. Never commit `.e
 | `VITE_APP_TITLE` | No | Optional application title override. |
 | `VITE_APP_LOGO` | No | Optional application logo override. |
 
-The platform-provided development environment already injects many of these values. A standalone clone outside the managed platform needs valid values from the corresponding OAuth and built-in API configuration.
+The platform-provided development environment already injects many of these values. A standalone clone outside the managed platform needs valid values from the corresponding OAuth and built-in API configuration. Analytics is optional; when `VITE_ANALYTICS_ENDPOINT` and `VITE_ANALYTICS_WEBSITE_ID` are unset, the application does not inject an analytics script and the build remains clean.
+
+If an environment handoff contains placeholder OAuth or frontend forge values, the public homepage and local build can still run, but sign-in and frontend platform features will not be operational until those values are replaced with real configuration. Keep the handoff file private and never commit `.env`.
 
 ## 3. Database migration
 
