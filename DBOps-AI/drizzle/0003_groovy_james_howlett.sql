@@ -1,1 +1,0 @@
-ALTER TABLE `sqlProposals` ADD `approved` int DEFAULT 0 NOT NULL;
