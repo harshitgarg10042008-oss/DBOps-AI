@@ -34,10 +34,56 @@ export async function withClient<T>(connection: DatabaseConnection, fn: (client:
   }
 }
 
-export async function verifyPostgresConnection(connection: DatabaseConnection) {
+export type PostgresPrivilegePosture = {
+  currentUser: string;
+  database: string;
+  isSuperuser: boolean;
+  canCreateDatabase: boolean;
+  canCreatePublicSchema: boolean;
+  hasWriteGrants: boolean;
+  readOnly: boolean;
+  warnings: string[];
+};
+
+export function summarizePrivilegePosture(row: Record<string, unknown>, fallbackUser: string, fallbackDatabase: string): PostgresPrivilegePosture {
+  const warnings: string[] = [];
+  if (Boolean(row.is_superuser)) warnings.push("The connected role is a superuser.");
+  if (Boolean(row.can_create_database)) warnings.push("The connected role can create databases.");
+  if (Boolean(row.can_create_public_schema)) warnings.push("The connected role can create objects in the public schema.");
+  if (Boolean(row.has_write_grants)) warnings.push("The connected role has table write privileges.");
+  return {
+    currentUser: String(row.current_user ?? fallbackUser),
+    database: String(row.database ?? fallbackDatabase),
+    isSuperuser: Boolean(row.is_superuser),
+    canCreateDatabase: Boolean(row.can_create_database),
+    canCreatePublicSchema: Boolean(row.can_create_public_schema),
+    hasWriteGrants: Boolean(row.has_write_grants),
+    readOnly: warnings.length === 0,
+    warnings,
+  };
+}
+
+export async function verifyPostgresConnection(connection: DatabaseConnection): Promise<PostgresPrivilegePosture> {
   return withClient(connection, async client => {
     await client.query("SELECT 1 AS ok");
-    return true;
+    const result = await client.query(`
+      SELECT
+        current_user AS current_user,
+        current_database() AS database,
+        rolsuper AS is_superuser,
+        has_database_privilege(current_user, current_database(), 'CREATE') AS can_create_database,
+        has_schema_privilege(current_user, 'public', 'CREATE') AS can_create_public_schema,
+        EXISTS (
+          SELECT 1
+          FROM information_schema.role_table_grants
+          WHERE grantee = current_user
+            AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
+        ) AS has_write_grants
+      FROM pg_roles
+      WHERE rolname = current_user
+      LIMIT 1
+    `);
+    return summarizePrivilegePosture(result.rows[0] ?? {}, connection.username, connection.databaseName);
   });
 }
 

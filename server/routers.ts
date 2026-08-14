@@ -10,10 +10,12 @@ import { auditEvents, dataContracts, databaseConnections, policyDecisions, polic
 import { encryptSecret, redactSql } from "./crypto";
 import { collectCatalog, executeReadOnly, verifyPostgresConnection, type Catalog } from "./postgres";
 import { validateReadOnlySql } from "./sqlPolicy";
-import { parseSqlProposal } from "./contracts";
+import { parseSqlProposal, validateEvidenceGrounding } from "./contracts";
 import { appendAuditEvent } from "./audit";
 import { parseExplainPlan } from "./performance";
 import { buildBlastRadius, checkContract, costGuard, diffCatalogs, fingerprintSql, semanticSimilarity } from "./differentiators";
+import { retrieveRelevantSchema } from "./schemaContext";
+import { evaluateExecutionPreflight } from "./executionGuard";
 
 const connectionInput = z.object({
   displayName: z.string().min(2).max(160),
@@ -82,10 +84,10 @@ export const appRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Application database is unavailable");
       try {
-        await verifyPostgresConnection(connection);
-        await db.update(databaseConnections).set({ status: "connected", lastError: null, lastVerifiedAt: new Date() }).where(eq(databaseConnections.id, input.id));
-        await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: input.id, eventType: "DATABASE_VERIFIED", status: "success" });
-        return { status: "connected" as const };
+        const posture = await verifyPostgresConnection(connection);
+        await db.update(databaseConnections).set({ status: "connected", lastError: posture.readOnly ? null : posture.warnings.join(" ").slice(0, 500), lastVerifiedAt: new Date() }).where(eq(databaseConnections.id, input.id));
+        await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: input.id, eventType: "DATABASE_VERIFIED", status: posture.readOnly ? "success" : "warning", metadata: { privilegePosture: posture } });
+        return { status: "connected" as const, privilegePosture: posture };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Connection failed";
         const status = /permission|authentication|authorization/i.test(message) ? "permission_denied" : "failed";
@@ -139,7 +141,7 @@ export const appRouter = router({
       const snapshot = await latestSchemaSnapshot(request.connectionId);
       if (!snapshot) throw new Error("Refresh the database schema before asking a question.");
       const catalog = snapshot.metadata as Catalog;
-      const compactSchema = catalog.tables.map(table => ({ schema: table.schema, table: table.name, columns: table.columns.map(column => `${column.name}:${column.dataType}`) }));
+      const compactSchema = retrieveRelevantSchema(catalog, request.naturalLanguageRequest);
       const response = await invokeLLM({
         messages: [
           { role: "system", content: "You are DBOps AI, a PostgreSQL operations assistant. Propose one read-only SELECT or EXPLAIN statement. Never invent tables or columns. Ask for clarification when the request is ambiguous. Return only the requested JSON structure. Confidence must reflect evidence, not optimism." },
@@ -160,7 +162,7 @@ export const appRouter = router({
       await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "PROPOSAL_GENERATED", status: "success", metadata: { confidence: parsed.confidence, tables: parsed.tables } });
       await savePolicyDecision({ requestId: input.requestId, decision: policy.decision, riskClass: policy.riskClass, reasons: policy.reasons, normalizedSql: policy.normalizedSql });
       await updateQueryStatus(input.requestId, policy.decision === "allow" ? "ready" : "blocked");
-      await saveEvidence({ requestId: input.requestId, evidenceType: "schema", payload: { tables: policy.tables, columns: policy.columns }, provenance: "schema_snapshot" });
+      await saveEvidence({ requestId: input.requestId, evidenceType: "schema", payload: { tables: policy.tables, columns: policy.columns }, provenance: "observed" });
       await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "POLICY_DECISION", status: policy.decision, metadata: { riskClass: policy.riskClass, reasons: policy.reasons } });
       return { ...parsed, policy };
     }),
@@ -187,12 +189,14 @@ export const appRouter = router({
         const planPayload = planResult.rows[0]?.["QUERY PLAN"] ?? planResult.rows[0]?.query_plan ?? planResult.rows[0];
         preflightPlan = parseExplainPlan(planPayload);
         const guard = costGuard(preflightPlan);
-        if (guard.status === "review" && !input.overrideCostGuard) {
-          await savePolicyDecision({ requestId: input.requestId, decision: "clarification", riskClass: "high_risk", reasons: guard.reasons, normalizedSql: policy.normalizedSql });
-          await updateQueryStatus(input.requestId, "blocked");
-          await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "QUERY_BLOCKED", status: "review_required", metadata: { costGuard: guard } });
-          throw new Error(`Cost Guard review required: ${guard.reasons.join(" ")}`);
+        const preflight = evaluateExecutionPreflight(policy, guard, input.overrideCostGuard);
+        if (preflight.action === "block") {
+          await savePolicyDecision({ requestId: input.requestId, decision: preflight.policyDecision, riskClass: "high_risk", reasons: guard.reasons, normalizedSql: policy.normalizedSql });
+          await updateQueryStatus(input.requestId, preflight.queryStatus);
+          await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "QUERY_BLOCKED", status: preflight.auditStatus, metadata: { costGuard: guard, preflight } });
+          throw new Error(`Cost Guard review required: ${preflight.reason}`);
         }
+        if (input.overrideCostGuard && guard.status === "review") await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "POLICY_DECISION", status: preflight.auditStatus, metadata: { costGuard: guard, preflight } });
       } catch (error) {
         if (error instanceof Error && /Cost Guard review required/.test(error.message)) throw error;
         preflightPlan = null;
@@ -205,7 +209,7 @@ export const appRouter = router({
           const planResult = await executeReadOnly(connection, `EXPLAIN (FORMAT JSON) ${input.sql.replace(/^\s*EXPLAIN(?:\s*\([^)]*\))?/i, "")}`, 1);
           const planPayload = planResult.rows[0]?.["QUERY PLAN"] ?? planResult.rows[0]?.query_plan ?? planResult.rows[0];
           planEvidence = parseExplainPlan(planPayload);
-          await saveEvidence({ requestId: input.requestId, evidenceType: "plan", payload: planEvidence, provenance: "postgres_explain_json" });
+          await saveEvidence({ requestId: input.requestId, evidenceType: "plan", payload: planEvidence, provenance: "observed" });
         } catch {
           planEvidence = null;
         }
@@ -220,20 +224,23 @@ export const appRouter = router({
           });
           const content = explanationResponse.choices[0]?.message?.content;
           const structured = typeof content === "string" ? JSON.parse(content) as { summary: string; evidence: string[]; limitations: string[] } : null;
-          if (structured?.summary) explanation = structured.summary;
+          if (structured?.summary) {
+            const grounding = validateEvidenceGrounding(structured.summary, { durationMs: result.durationMs, rowCount: result.rowCount, truncated: result.truncated, rows: result.rows.slice(0, 20) });
+            explanation = grounding.supported ? structured.summary : `Evidence-grounding validator withheld the model summary. ${grounding.unsupportedClaims.join(" ")}`;
+          }
         } catch {
           explanation = "The query completed successfully, but an automated explanation was unavailable. The raw evidence remains available below.";
         }
         await saveExecution({ requestId: input.requestId, status: result.truncated ? "limit_reached" : "success", durationMs: result.durationMs, rowsReturned: result.rows.length, resultPreview: result.rows });
-        await saveEvidence({ requestId: input.requestId, evidenceType: "result", payload: { rows: result.rows, rowCount: result.rowCount, explanation }, provenance: "read_only_execution" });
-        await saveEvidence({ requestId: input.requestId, evidenceType: "execution", payload: { durationMs: result.durationMs, truncated: result.truncated }, provenance: "query_executor" });
+        await saveEvidence({ requestId: input.requestId, evidenceType: "result", payload: { rows: result.rows, rowCount: result.rowCount, explanation }, provenance: "observed" });
+        await saveEvidence({ requestId: input.requestId, evidenceType: "execution", payload: { durationMs: result.durationMs, truncated: result.truncated }, provenance: "observed" });
         await updateQueryStatus(input.requestId, "completed");
         await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "QUERY_EXECUTED", status: "success", metadata: { durationMs: result.durationMs, rowsReturned: result.rows.length, truncated: result.truncated, sql: redactSql(input.sql) } });
         return { ...result, sql: policy.normalizedSql, explanation, plan: planEvidence };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Query failed";
         await saveExecution({ requestId: input.requestId, status: /timeout/i.test(message) ? "timeout" : "failed", errorCode: /timeout/i.test(message) ? "QUERY_TIMEOUT" : "QUERY_FAILED", errorMessage: message.slice(0, 500) });
-        await saveEvidence({ requestId: input.requestId, evidenceType: "error", payload: { message: message.slice(0, 500) }, provenance: "query_executor" });
+        await saveEvidence({ requestId: input.requestId, evidenceType: "error", payload: { message: message.slice(0, 500) }, provenance: "observed" });
         await updateQueryStatus(input.requestId, "failed");
         await recordEvent({ workspaceId, actorId: ctx.user.id, connectionId: request.connectionId, requestId: input.requestId, eventType: "QUERY_EXECUTED", status: "failed", metadata: { error: message.slice(0, 240) } });
         throw new Error(message);

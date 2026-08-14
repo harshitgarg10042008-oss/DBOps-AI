@@ -123,6 +123,36 @@
 
 ## Setup handoff
 
-- [ ] Verify the latest differentiated-feature commit is present on GitHub
-- [ ] Document required, optional, and placeholder environment keys
-- [ ] Document fresh-clone installation, migration, testing, development, and production-start commands
+- [x] Verify the latest differentiated-feature commit is present on GitHub
+- [x] Document required, optional, and placeholder environment keys
+- [x] Document fresh-clone installation, migration, testing, development, and production-start commands
+
+## Security Hardening v1
+
+- [x] Formalize the SQL policy contract and explicitly reject dangerous read-shaped operations
+- [x] Add adversarial SQL policy tests for multi-statements, comments, CTEs, volatile functions, COPY, SELECT INTO, system objects, and EXPLAIN ANALYZE
+- [x] Add PostgreSQL connection privilege verification for read-only role posture
+- [x] Formalize the structured SQL proposal JSON contract in documentation and code
+- [x] Enforce strict evidence provenance values and evidence-grounding validation
+- [x] Document and implement bounded schema-context retrieval with keyword and relationship expansion
+- [x] Document manual catalog refresh behavior and freshness timestamps
+- [x] Add Cost Guard and privilege verification regression coverage
+- [x] Run full type checks, tests, build, responsive verification, save checkpoint, and push to GitHub
+
+## Security Hardening v1 final verification
+
+- [x] Add deterministic evidence-grounding validation for explanation claims against observed evidence
+- [x] Add privilege-posture verification tests and Cost Guard block/override tests
+- [x] Run responsive visual verification for the hardened build
+- [x] Save a fresh hardening checkpoint and push the latest commit to GitHub
+
+## Hardening release completion
+
+- [x] Add live execute-procedure Cost Guard block and override regression coverage
+- [x] Run hardened-build visual verification at desktop and mobile breakpoints
+- [x] Save the Security Hardening v1 checkpoint and push the latest commit to GitHub
+
+## Final execution-boundary release
+
+- [x] Add procedure-boundary Cost Guard tests covering block, override, status, and audit decision outcomes
+- [x] Save the Security Hardening v1 checkpoint and push and verify the latest GitHub commit

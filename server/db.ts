@@ -1,4 +1,5 @@
-import { and, desc, eq } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
+import { assertEvidenceProvenance } from "./contracts";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   auditEvents,
@@ -182,6 +183,7 @@ export async function saveExecution(data: typeof queryExecutions.$inferInsert) {
 export async function saveEvidence(data: typeof evidenceItems.$inferInsert) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
+  assertEvidenceProvenance(data.provenance);
   await db.insert(evidenceItems).values(data);
 }
 

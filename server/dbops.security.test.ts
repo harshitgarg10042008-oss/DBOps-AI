@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { decryptSecret, encryptSecret, redactSql } from "./crypto";
 import { validateReadOnlySql } from "./sqlPolicy";
-import { buildBoundedReadOnlySql } from "./postgres";
-import { isImmutableAuditEventType, parseSqlProposal } from "./contracts";
+import { buildBoundedReadOnlySql, summarizePrivilegePosture } from "./postgres";
+import { assertEvidenceProvenance, isImmutableAuditEventType, parseSqlProposal, validateEvidenceGrounding } from "./contracts";
+import { retrieveRelevantSchema } from "./schemaContext";
+import { evaluateExecutionPreflight } from "./executionGuard";
 import { canAccessWorkspace } from "./authz";
 import { appendAuditEvent } from "./audit";
 import { parseExplainPlan } from "./performance";
@@ -50,6 +52,29 @@ describe("DBOps security primitives", () => {
     expect(parseSqlProposal({ sql: "SELECT 1", tables: [], columns: [], assumptions: [], confidence: 0.8, clarificationNeeded: false, clarification: "" }).confidence).toBe(0.8);
   });
 
+  it("validates explanation claims against evidence", () => {
+    expect(validateEvidenceGrounding("Returned 3 rows in 12ms.", { rowCount: 3, durationMs: 12 }).supported).toBe(true);
+    expect(validateEvidenceGrounding("This will improve performance by 90%.", { rowCount: 3 }).supported).toBe(false);
+  });
+
+  it("enforces read-only PostgreSQL privilege posture warnings", () => {
+    const posture = summarizePrivilegePosture({ current_user: "app", database: "db", is_superuser: true, can_create_database: false, can_create_public_schema: false, has_write_grants: true }, "fallback", "fallback");
+    expect(posture.readOnly).toBe(false);
+    expect(posture.warnings).toHaveLength(2);
+  });
+
+  it("enforces the evidence provenance enum", () => {
+    expect(assertEvidenceProvenance("observed")).toBe("observed");
+    expect(() => assertEvidenceProvenance("postgres_explain_json")).toThrow();
+  });
+
+  it("bounds relevant schema context and expands relationships", () => {
+    const relatedCatalog = { ...catalog, relationships: [{ fromSchema: "public", fromTable: "orders", fromColumn: "customer_id", toSchema: "public", toTable: "customers", toColumn: "id" }], tables: [...catalog.tables, { schema: "public", name: "customers", type: "BASE TABLE", columns: [{ name: "id", dataType: "integer", nullable: false, defaultValue: null }] }] };
+    const context = retrieveRelevantSchema(relatedCatalog, "orders", { maxTables: 4, maxColumns: 10 });
+    expect(context.map(item => item.table)).toEqual(expect.arrayContaining(["orders", "customers"]));
+    expect(context.reduce((count, item) => count + item.columns.length, 0)).toBeLessThanOrEqual(10);
+  });
+
   it("allows only append-only lifecycle event types", () => {
     expect(isImmutableAuditEventType("PROPOSAL_GENERATED")).toBe(true);
     expect(isImmutableAuditEventType("AUDIT_UPDATED")).toBe(false);
@@ -63,6 +88,15 @@ describe("DBOps security primitives", () => {
 
   it("rejects unsupported audit mutation-style event paths", async () => {
     await expect(appendAuditEvent({ workspaceId: 1, actorId: 1, eventType: "AUDIT_UPDATED", status: "blocked", metadata: {} })).rejects.toThrow(/Unsupported audit event type/);
+  });
+
+  it("enforces the procedure-boundary Cost Guard block and override outcomes", () => {
+    const guard = costGuard({ totalCost: 20000, planRows: 500000, nodeType: "Seq Scan" });
+    const policy = validateReadOnlySql("SELECT id FROM orders", catalog);
+    const blocked = evaluateExecutionPreflight(policy, guard, false);
+    expect(blocked).toMatchObject({ action: "block", queryStatus: "blocked", policyDecision: "clarification", auditStatus: "review_required" });
+    const overridden = evaluateExecutionPreflight(policy, guard, true);
+    expect(overridden).toMatchObject({ action: "allow", queryStatus: "ready", policyDecision: "allow", auditStatus: "override_allowed" });
   });
 
   it("extracts evidence-backed EXPLAIN findings", () => {
@@ -104,5 +138,27 @@ describe("DBOps security primitives", () => {
     const result = validateReadOnlySql("SELECT missing_column FROM orders", catalog);
     expect(result.decision).toBe("reject");
     expect(result.reasons.join(" ")).toMatch(/Unknown column/i);
+  });
+});
+
+
+describe("DBOps adversarial SQL policy", () => {
+  it.each([
+    ["SELECT INTO", "SELECT id INTO copied_orders FROM orders"],
+    ["COPY", "COPY orders TO '/tmp/orders.csv'"],
+    ["sleep function", "SELECT pg_sleep(30) FROM orders"],
+    ["sequence mutation", "SELECT nextval('orders_id_seq')"],
+    ["EXPLAIN ANALYZE", "EXPLAIN ANALYZE SELECT id FROM orders"],
+    ["system catalog", "SELECT usename FROM pg_catalog.pg_user"],
+    ["comment smuggling", "SELECT id FROM orders /* ; DROP TABLE orders */"],
+    ["CTE side effect", "WITH delayed AS (SELECT pg_sleep(30)) SELECT * FROM delayed"],
+  ])("rejects %s", (_label, sql) => {
+    expect(validateReadOnlySql(sql, catalog).decision).toBe("reject");
+  });
+
+  it("rejects uncataloged schema-qualified tables", () => {
+    const result = validateReadOnlySql("SELECT * FROM private.orders", catalog);
+    expect(result.decision).toBe("reject");
+    expect(result.reasons.join(" ")).toMatch(/uncataloged|unknown/i);
   });
 });

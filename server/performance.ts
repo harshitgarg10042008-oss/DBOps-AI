@@ -1,5 +1,9 @@
 export type PlanFinding = { kind: "sequential_scan" | "high_cost" | "large_estimate"; message: string; evidence: string };
 
+export function shouldBlockCostGuard(guard: { status: string }, overrideCostGuard: boolean) {
+  return guard.status === "review" && !overrideCostGuard;
+}
+
 export function parseExplainPlan(payload: unknown): { totalCost: number; planRows: number; nodeType: string; findings: PlanFinding[] } {
   const root = Array.isArray(payload) ? (payload[0] as any)?.Plan ?? {} : (payload as any)?.Plan ?? {};
   const totalCost = Number(root["Total Cost"] ?? 0);
