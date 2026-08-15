@@ -15,6 +15,23 @@ export { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 export const startLogin = () => {
   const oauthPortalUrl = import.meta.env.VITE_OAUTH_PORTAL_URL;
   const appId = import.meta.env.VITE_APP_ID;
+
+  // If VITE_OAUTH_PORTAL_URL is not a real URL (e.g. still a placeholder in
+  // local dev), skip the Manus OAuth flow and use the built-in dev-login
+  // bypass that the server registers at /api/dev/local-login.
+  let isValidOAuthUrl = false;
+  try {
+    if (oauthPortalUrl) new URL(oauthPortalUrl);
+    isValidOAuthUrl = Boolean(oauthPortalUrl && !oauthPortalUrl.startsWith("your_"));
+  } catch {
+    isValidOAuthUrl = false;
+  }
+
+  if (!isValidOAuthUrl) {
+    window.location.href = "/api/dev/local-login";
+    return;
+  }
+
   const redirectUri = `${window.location.origin}/api/oauth/callback`;
 
   const nonce = crypto.randomUUID();

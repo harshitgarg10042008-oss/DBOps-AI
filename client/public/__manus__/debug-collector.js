@@ -756,8 +756,10 @@
   // Periodic reporting
   setInterval(reportLogs, CONFIG.reportInterval);
 
-  // Report on page unload
-  window.addEventListener("beforeunload", function () {
+  // Report when page is hidden (replaces deprecated unload/beforeunload)
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "hidden") return;
+
     var consoleLogs = store.consoleLogs;
     var networkRequests = store.networkRequests;
     var uiEvents = store.uiEvents;
@@ -798,6 +800,7 @@
       navigator.sendBeacon(CONFIG.reportEndpoint, payloadStr);
     }
   });
+
 
   // ==========================================================================
   // Initialization
