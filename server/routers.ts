@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { invokeLLM } from "./_core/llm";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -253,8 +253,10 @@ export const appRouter = router({
       const workspaceId = await workspaceFor(ctx.user.id);
       const db = await getDb();
       if (!db) throw new Error("Application database is unavailable");
-      const membership = (await db.select().from(workspaceMembers).where(eq(workspaceMembers.id, input.memberId)).limit(1))[0];
-      if (!membership || membership.workspaceId !== workspaceId) throw new Error("Member is outside your workspace");
+      const actor = (await db.select({ role: workspaceMembers.role }).from(workspaceMembers).where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, ctx.user.id))).limit(1))[0];
+      if (!actor || (actor.role !== "owner" && actor.role !== "admin")) throw new Error("Only workspace owners and admins can change member roles");
+      const membership = (await db.select().from(workspaceMembers).where(and(eq(workspaceMembers.id, input.memberId), eq(workspaceMembers.workspaceId, workspaceId))).limit(1))[0];
+      if (!membership || membership.role === "owner") throw new Error("Owner membership cannot be changed");
       await db.update(workspaceMembers).set({ role: input.role }).where(eq(workspaceMembers.id, input.memberId));
       return { success: true } as const;
     }),
@@ -262,9 +264,11 @@ export const appRouter = router({
       const workspaceId = await workspaceFor(ctx.user.id);
       const db = await getDb();
       if (!db) throw new Error("Application database is unavailable");
-      const membership = (await db.select().from(workspaceMembers).where(eq(workspaceMembers.id, input.memberId)).limit(1))[0];
-      if (!membership || membership.workspaceId !== workspaceId || membership.role === "owner") throw new Error("Owner membership cannot be removed");
-      await db.delete(workspaceMembers).where(eq(workspaceMembers.id, input.memberId));
+      const actor = (await db.select({ role: workspaceMembers.role }).from(workspaceMembers).where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, ctx.user.id))).limit(1))[0];
+      if (!actor || (actor.role !== "owner" && actor.role !== "admin")) throw new Error("Only workspace owners and admins can remove members");
+      const membership = (await db.select().from(workspaceMembers).where(and(eq(workspaceMembers.id, input.memberId), eq(workspaceMembers.workspaceId, workspaceId))).limit(1))[0];
+      if (!membership || membership.role === "owner") throw new Error("Owner membership cannot be removed");
+      await db.delete(workspaceMembers).where(and(eq(workspaceMembers.id, input.memberId), eq(workspaceMembers.workspaceId, workspaceId)));
       return { success: true } as const;
     }),
   }),
@@ -343,7 +347,7 @@ export const appRouter = router({
       const workspaceId = await workspaceFor(ctx.user.id);
       const version = (await listPolicyRules(workspaceId)).filter(rule => rule.name === input.name).length + 1;
       const id = await createPolicyRule({ workspaceId, name: input.name, version, maxRows: input.maxRows, allowedSchemas: input.allowedSchemas, status: input.activate ? "active" : "draft", createdById: ctx.user.id });
-      await appendAuditEvent({ workspaceId, actorId: ctx.user.id, eventType: "policy_decision", status: "success", metadata: { action: "policy_saved", policyId: id, version } });
+      await appendAuditEvent({ workspaceId, actorId: ctx.user.id, eventType: "POLICY_DECISION", status: "success", metadata: { action: "policy_saved", policyId: id, version } });
       return { id, version };
     }),
     dryRunPolicy: protectedProcedure.input(z.object({ sql: z.string().min(1), maxRows: z.number().int().min(1).max(10000) })).mutation(async ({ input }) => ({ ...validateReadOnlySql(input.sql, { tables: [], relationships: [], indexes: [], constraints: [], views: [] } as Catalog), bounded: input.sql.toLowerCase().includes("limit") || input.maxRows > 0 })),
