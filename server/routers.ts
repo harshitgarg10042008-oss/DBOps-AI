@@ -284,10 +284,31 @@ export const appRouter = router({
     }),
   }),
   investigations: router({
-    list: protectedProcedure.query(async () => ({ items: [], status: "ready_for_query_trace" as const })),
+    list: protectedProcedure.query(async ({ ctx }) => {
+      const workspaceId = await workspaceFor(ctx.user.id);
+      const [queries, slowQueries, audit] = await Promise.all([listRecentQueries(workspaceId), listSlowQueries(workspaceId), listAuditEvents(workspaceId)]);
+      const slowByRequest = new Map(slowQueries.map(item => [item.requestId, item]));
+      const items = queries.map(query => ({
+        requestId: query.id,
+        question: query.naturalLanguageRequest,
+        status: query.status,
+        createdAt: query.createdAt,
+        execution: slowByRequest.get(query.id) ?? null,
+        auditEvents: audit.filter(event => event.requestId === query.id).length,
+      }));
+      return { items, status: items.length ? "evidence_available" as const : "awaiting_query_trace" as const };
+    }),
   }),
   security: router({
-    posture: protectedProcedure.query(async () => ({ checks: [], status: "requires_database_permission_scan" as const })),
+    posture: protectedProcedure.query(async ({ ctx }) => {
+      const workspaceId = await workspaceFor(ctx.user.id);
+      const connections = await listConnections(workspaceId);
+      const checks = connections.flatMap(connection => [
+        { connectionId: connection.id, type: "connection_status", severity: connection.status === "connected" ? "pass" : "review", evidence: `${connection.displayName}: ${connection.status}` },
+        { connectionId: connection.id, type: "verification_freshness", severity: connection.lastVerifiedAt ? "pass" : "review", evidence: connection.lastVerifiedAt ? `Verified ${connection.lastVerifiedAt.toISOString()}` : "Connection has not been verified" },
+      ]);
+      return { checks, status: checks.length ? "evidence_available" as const : "awaiting_database_connection" as const };
+    }),
     scan: protectedProcedure.input(z.object({ connectionId: z.number().int() })).mutation(async ({ ctx, input }) => {
       const workspaceId = await workspaceFor(ctx.user.id);
       const connection = await getConnection(workspaceId, input.connectionId);
@@ -301,7 +322,16 @@ export const appRouter = router({
     }),
   }),
   evaluation: router({
-    benchmark: protectedProcedure.query(async () => ({ cases: [], metrics: { accuracy: null, safetyViolations: null, hallucinationRate: null, latencyMs: null, cost: null }, status: "no_benchmark_run" as const })),
+    benchmark: protectedProcedure.query(async ({ ctx }) => {
+      const workspaceId = await workspaceFor(ctx.user.id);
+      const [queries, audit, slowQueries] = await Promise.all([listRecentQueries(workspaceId), listAuditEvents(workspaceId), listSlowQueries(workspaceId)]);
+      const rejected = audit.filter(event => event.eventType === "POLICY_DECISION" && /reject/i.test(event.status)).length;
+      const successfulExecutions = slowQueries.filter(item => item.status === "success").length;
+      const cases = queries.map(query => ({ requestId: query.id, question: query.naturalLanguageRequest, status: query.status, hasPolicyEvidence: audit.some(event => event.requestId === query.id && event.eventType === "POLICY_DECISION"), hasExecutionEvidence: slowQueries.some(item => item.requestId === query.id) }));
+      const latencySamples = slowQueries.map(item => item.durationMs).filter((value): value is number => typeof value === "number");
+      const latencyMs = latencySamples.length ? Math.round(latencySamples.reduce((sum, value) => sum + value, 0) / latencySamples.length) : null;
+      return { cases, metrics: { totalCases: cases.length, policyRejections: rejected, safetyViolations: rejected, successfulExecutions, accuracy: null, hallucinationRate: null, latencyMs, cost: null }, status: cases.length ? "evidence_available" as const : "awaiting_benchmark_cases" as const, note: "Accuracy, hallucination rate, and cost require labeled benchmark cases and model telemetry; they are not inferred from production activity." };
+    }),
   }),
   differentiators: router({
     drift: protectedProcedure.input(z.object({ connectionId: z.number().int() })).query(async ({ ctx, input }) => {
