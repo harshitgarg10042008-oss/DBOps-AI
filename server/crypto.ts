@@ -5,8 +5,11 @@ const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 
 function getKey() {
-  const source = process.env.JWT_SECRET ?? "dbops-ai-development-secret";
-  return crypto.createHash("sha256").update(source).digest().subarray(0, KEY_LENGTH);
+  const source = process.env.JWT_SECRET;
+  if (!source && process.env.NODE_ENV === "production") {
+    throw new Error("JWT_SECRET is required for production secret encryption");
+  }
+  return crypto.createHash("sha256").update(source ?? "dbops-ai-development-secret").digest().subarray(0, KEY_LENGTH);
 }
 
 export function encryptSecret(value: string) {
@@ -19,6 +22,7 @@ export function encryptSecret(value: string) {
 
 export function decryptSecret(payload: string) {
   const raw = Buffer.from(payload, "base64url");
+  if (raw.length <= IV_LENGTH + TAG_LENGTH) throw new Error("Invalid encrypted secret payload");
   const iv = raw.subarray(0, IV_LENGTH);
   const tag = raw.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
   const encrypted = raw.subarray(IV_LENGTH + TAG_LENGTH);
